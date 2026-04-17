@@ -23,6 +23,8 @@ interface ChapterDetails {
   headEmail: string;
   headName: string;
   memberCount: number;
+  school?: string;
+  tags?: string[];
   status: 'active' | 'inactive';
   updatedAt: string;
   registrationStatus?: 'open' | 'closed';

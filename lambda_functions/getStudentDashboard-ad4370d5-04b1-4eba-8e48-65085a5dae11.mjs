@@ -7,6 +7,18 @@ const dynamo = new DynamoDBClient({ region: "ap-south-1" });
 const USERS_TABLE = "Unify-Users";
 const CHAPTERS_TABLE = "Chapters";
 
+const normalizeTags = (tagsAttribute) => {
+  if (!tagsAttribute) return [];
+  const rawTags = tagsAttribute.SS || tagsAttribute.L?.map((item) => item.S) || [];
+  return Array.from(
+    new Set(
+      rawTags
+        .map((tag) => String(tag || '').trim().toLowerCase())
+        .filter(Boolean)
+    )
+  );
+};
+
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "Content-Type,Authorization",
@@ -128,6 +140,18 @@ export const handler = async (event) => {
       console.log('Activities scan issue:', err.message);
     }
 
+    const chapterNameSet = new Set(registeredChapters);
+    const registeredChapterDetails = (allChapters.Items || [])
+      .filter((chapter) => chapterNameSet.has(chapter.chapterName?.S || ''))
+      .map((chapter) => ({
+        id: chapter.chapterId?.S || '',
+        name: chapter.chapterName?.S || 'Unknown Chapter',
+        headName: chapter.headName?.S || 'Not assigned',
+        memberCount: Number(chapter.memberCount?.N || 0),
+        school: chapter.school?.S || '',
+        tags: normalizeTags(chapter.tags)
+      }));
+
     const dashboardData = {
       registeredChaptersCount: registeredChapters.length,
       totalAvailableChapters: allChapters.Items?.length || 0,
@@ -137,6 +161,7 @@ export const handler = async (event) => {
         name: chapter,
         registeredAt: user.createdAt?.S || new Date().toISOString()
       })),
+      chapters: registeredChapterDetails,
       recentActivities,
       userEmail: userEmail,
       userName: user.name?.S || 'Unknown User'

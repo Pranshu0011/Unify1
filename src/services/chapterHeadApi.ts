@@ -170,6 +170,15 @@ export const chapterHeadAPI = {
     return handleResponse(response);
   },
 
+  updateChapterTags: async (chapterId: string, metadata: { school: string; tags: string[] }) => {
+    const response = await fetch(`${API_BASE_URL}/chapterhead/chapters/${encodeURIComponent(chapterId)}/tags`, {
+      method: 'PUT',
+      headers: getAuthHeaders(),
+      body: JSON.stringify(metadata),
+    });
+    return handleResponse(response);
+  },
+
   // Fetch event profile for display (students and heads)
   getEventProfile: async (eventId: string) => {
     const response = await fetch(`${NEW_FEATURES_API_BASE_URL}/api/events/${encodeURIComponent(eventId)}/profile`, {

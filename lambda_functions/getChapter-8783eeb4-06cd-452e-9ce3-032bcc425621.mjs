@@ -2,6 +2,18 @@ import { DynamoDBClient, ScanCommand } from "@aws-sdk/client-dynamodb";
 
 const dynamo = new DynamoDBClient({ region: "ap-south-1" });
 
+const normalizeTags = (tagsAttribute) => {
+  if (!tagsAttribute) return [];
+  const rawTags = tagsAttribute.SS || tagsAttribute.L?.map((item) => item.S) || [];
+  return Array.from(
+    new Set(
+      rawTags
+        .map((tag) => String(tag || '').trim().toLowerCase())
+        .filter(Boolean)
+    )
+  );
+};
+
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "Content-Type,Authorization",
@@ -90,6 +102,8 @@ export const handler = async (event) => {
         name,
         chapterHead,
         description,
+        school: item.school?.S || '',
+        tags: normalizeTags(item.tags),
         status
       };
       

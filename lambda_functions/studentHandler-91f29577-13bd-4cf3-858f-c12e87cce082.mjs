@@ -1,9 +1,12 @@
 // index.mjs - Node.js 22 ES Module format for AWS Lambda
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, GetCommand, ScanCommand, UpdateCommand, PutCommand } from '@aws-sdk/lib-dynamodb';
+import { BedrockRuntimeClient, ConverseCommand } from '@aws-sdk/client-bedrock-runtime';
 
 const client = new DynamoDBClient({});
 const dynamoDB = DynamoDBDocumentClient.from(client);
+const bedrockClient = new BedrockRuntimeClient({ region: process.env.BEDROCK_REGION || 'us-east-1' });
+const BEDROCK_MODEL_ID = process.env.BEDROCK_MODEL_ID || 'amazon.nova-micro-v1:0';
 
 // Helper: Extract user email from JWT token
 const getUserEmailFromToken = (token) => {
@@ -90,6 +93,169 @@ const getChapterById = async (chapterId) => {
   }
 };
 
+const normalizeTags = (tags) => {
+  if (!Array.isArray(tags)) return [];
+  return Array.from(
+    new Set(
+      tags
+        .map((tag) => String(tag || '').trim().toLowerCase())
+        .filter(Boolean)
+    )
+  );
+};
+
+const toSafeString = (value) => String(value || '').trim();
+
+const formatChapterForModel = (chapter, joinedChapterIds, joinedChapterNames, preferredSchools, preferredTags) => {
+  const chapterTags = normalizeTags(chapter.tags);
+  const school = toSafeString(chapter.school);
+  const overlappingTags = chapterTags.filter((tag) => preferredTags.has(tag));
+  const sameSchool = !!school && preferredSchools.has(school);
+  const memberCount = Number(chapter.memberCount || 0);
+  const alreadyJoined = joinedChapterIds.has(chapter.chapterId) || joinedChapterNames.has(chapter.chapterName);
+
+  let score = 0;
+  if (sameSchool) score += 5;
+  score += overlappingTags.length * 3;
+  if (chapter.registrationOpen) score += 1;
+  score += Math.min(memberCount / 50, 2);
+
+  const reasons = [];
+  if (sameSchool) reasons.push(`Matches your interest in ${school}`);
+  if (overlappingTags.length > 0) reasons.push(`Shared topics: ${overlappingTags.slice(0, 3).join(', ')}`);
+  if (memberCount > 0) reasons.push(`${memberCount} students already joined`);
+  if (chapter.registrationOpen) reasons.push('Registration is open now');
+
+  return {
+    chapterId: chapter.chapterId,
+    chapterName: chapter.chapterName,
+    headName: chapter.headName || 'Not assigned',
+    school,
+    tags: chapterTags,
+    memberCount,
+    registrationOpen: !!chapter.registrationOpen,
+    score,
+    reasons: reasons.slice(0, 3),
+    alreadyJoined
+  };
+};
+
+const buildRecommendationContext = async (user) => {
+  const [allChaptersResult, approvedResult] = await Promise.all([
+    dynamoDB.send(new ScanCommand({
+      TableName: 'Chapters',
+      FilterExpression: '#status = :status',
+      ExpressionAttributeNames: { '#status': 'status' },
+      ExpressionAttributeValues: { ':status': 'active' }
+    })),
+    dynamoDB.send(new ScanCommand({
+      TableName: 'RegistrationRequests',
+      FilterExpression: 'userId = :userId AND #status = :status',
+      ExpressionAttributeNames: { '#status': 'status' },
+      ExpressionAttributeValues: {
+        ':userId': user.userId,
+        ':status': 'approved'
+      }
+    }))
+  ]);
+
+  const joinedChapterIds = new Set((approvedResult.Items || []).map((item) => item.chapterId).filter(Boolean));
+  const joinedChapterNames = new Set(
+    Array.from(user.registeredChapters || []).map((name) => toSafeString(name)).filter(Boolean)
+  );
+
+  const joinedChapters = (allChaptersResult.Items || []).filter(
+    (chapter) => joinedChapterIds.has(chapter.chapterId) || joinedChapterNames.has(chapter.chapterName)
+  );
+
+  const preferredSchools = new Set(
+    joinedChapters.map((chapter) => toSafeString(chapter.school)).filter(Boolean)
+  );
+  const preferredTags = new Set(joinedChapters.flatMap((chapter) => normalizeTags(chapter.tags)));
+
+  const rankedCandidates = (allChaptersResult.Items || [])
+    .map((chapter) => formatChapterForModel(chapter, joinedChapterIds, joinedChapterNames, preferredSchools, preferredTags))
+    .filter((chapter) => !chapter.alreadyJoined)
+    .sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      if (Number(b.registrationOpen) !== Number(a.registrationOpen)) {
+        return Number(b.registrationOpen) - Number(a.registrationOpen);
+      }
+      return b.memberCount - a.memberCount;
+    });
+
+  return {
+    preferredSchools: Array.from(preferredSchools),
+    preferredTags: Array.from(preferredTags),
+    joinedChapters: joinedChapters.map((chapter) => ({
+      chapterId: chapter.chapterId,
+      chapterName: chapter.chapterName,
+      school: toSafeString(chapter.school),
+      tags: normalizeTags(chapter.tags)
+    })),
+    rankedCandidates
+  };
+};
+
+const invokeRecommendationModel = async ({ user, context, mode, message, history }) => {
+  const candidateSlice = context.rankedCandidates.slice(0, 8).map((chapter) => ({
+    chapterId: chapter.chapterId,
+    chapterName: chapter.chapterName,
+    school: chapter.school,
+    tags: chapter.tags,
+    memberCount: chapter.memberCount,
+    registrationOpen: chapter.registrationOpen,
+    reasons: chapter.reasons,
+    score: chapter.score
+  }));
+
+  const systemText = mode === 'chat'
+    ? `You are Unify's chapter recommendation assistant. Use only the provided chapter data from DynamoDB. Recommend chapters based on school and tags. Be concise, useful, and conversational. Return valid JSON with keys: answer, recommendedChapterIds.`
+    : `You are Unify's chapter recommendation ranker. Use only the provided chapter data from DynamoDB. Rank chapters for the student based on school and tags. Return valid JSON with keys: recommendations where each recommendation has chapterId and reasons.`;
+
+  const promptPayload = {
+    student: {
+      name: user.name,
+      email: user.email,
+      schoolSignals: context.preferredSchools,
+      tagSignals: context.preferredTags,
+      joinedChapters: context.joinedChapters
+    },
+    candidateChapters: candidateSlice,
+    userMessage: message || '',
+    conversationHistory: history || []
+  };
+
+  const response = await bedrockClient.send(new ConverseCommand({
+    modelId: BEDROCK_MODEL_ID,
+    system: [{ text: systemText }],
+    messages: [
+      {
+        role: 'user',
+        content: [{ text: JSON.stringify(promptPayload) }]
+      }
+    ],
+    inferenceConfig: {
+      maxTokens: 800,
+      temperature: 0.2
+    }
+  }));
+
+  const text = response?.output?.message?.content
+    ?.map((item) => item.text || '')
+    .join('')
+    .trim();
+
+  if (!text) {
+    throw new Error('Empty model response');
+  }
+
+  const jsonStart = text.indexOf('{');
+  const jsonEnd = text.lastIndexOf('}');
+  const jsonText = jsonStart >= 0 && jsonEnd >= jsonStart ? text.slice(jsonStart, jsonEnd + 1) : text;
+  return JSON.parse(jsonText);
+};
+
 export const handler = async (event) => {
   const headers = {
     'Access-Control-Allow-Origin': '*',
@@ -149,6 +315,12 @@ export const handler = async (event) => {
       
       case httpMethod === 'GET' && path === '/student/dashboard':
         return await getStudentDashboard(userEmail, headers);
+      
+      case httpMethod === 'GET' && path === '/student/recommendations':
+        return await getRecommendedChapters(userEmail, headers);
+
+      case httpMethod === 'POST' && path === '/student/recommendations/chat':
+        return await chatWithRecommendationBot(userEmail, JSON.parse(event.body || '{}'), headers);
       
       case httpMethod === 'GET' && path === '/student/pending-registrations':
         return await getPendingRegistrations(userEmail, headers);
@@ -306,6 +478,7 @@ const getAvailableChapters = async (userEmail, headers) => {
       id: chapter.chapterId,
       name: chapter.chapterName,
       description: `Managed by ${chapter.headName}`,
+      school: chapter.school || '',
       category: 'General',
       adminId: chapter.chapterId,
       adminName: chapter.headName,
@@ -315,7 +488,7 @@ const getAvailableChapters = async (userEmail, headers) => {
       benefits: ['Skill development', 'Networking opportunities'],
       meetingSchedule: 'Weekly meetings',
       contactEmail: chapter.headEmail,
-      tags: ['student-organization'],
+      tags: normalizeTags(chapter.tags),
       createdAt: chapter.createdAt,
       updatedAt: chapter.updatedAt
     }));
@@ -392,6 +565,8 @@ const getMyChapters = async (userEmail, headers) => {
       name: chapter.chapterName,
       description: `Managed by ${chapter.headName}`,
       memberCount: chapter.memberCount || 0,
+      school: chapter.school || '',
+      tags: normalizeTags(chapter.tags),
       headName: chapter.headName,
       headEmail: chapter.headEmail,
       headId: chapter.headId || headIdByEmail.get(String(chapter.headEmail || '').trim().toLowerCase()) || null,
@@ -487,7 +662,9 @@ const getStudentDashboard = async (userEmail, headers) => {
         id: chapter.chapterId,
         name: chapter.chapterName,
         headName: chapter.headName,
-        memberCount: chapter.memberCount || 0
+        memberCount: chapter.memberCount || 0,
+        school: chapter.school || '',
+        tags: normalizeTags(chapter.tags)
       })),
       stats: {
         totalChapters: registeredChapters.length,
@@ -505,6 +682,147 @@ const getStudentDashboard = async (userEmail, headers) => {
       statusCode: 500,
       headers,
       body: JSON.stringify({ error: 'Failed to fetch dashboard data', details: error.message })
+    };
+  }
+};
+
+const getRecommendedChapters = async (userEmail, headers) => {
+  try {
+    const user = await getUserByEmail(userEmail);
+    if (!user) {
+      return {
+        statusCode: 404,
+        headers,
+        body: JSON.stringify({ error: 'User not found' })
+      };
+    }
+
+    const context = await buildRecommendationContext(user);
+    let recommendations = context.rankedCandidates.slice(0, 5);
+    let recommendationStrategy = context.preferredSchools.length > 0 || context.preferredTags.length > 0
+      ? 'bedrock-nova-micro-school-tag-ranking'
+      : 'bedrock-nova-micro-popular-open-chapters';
+
+    try {
+      const modelResult = await invokeRecommendationModel({
+        user,
+        context,
+        mode: 'rank'
+      });
+
+      if (Array.isArray(modelResult?.recommendations) && modelResult.recommendations.length > 0) {
+        const modelMap = new Map(
+          (modelResult.recommendations || []).map((item) => [item.chapterId, item])
+        );
+
+        const reranked = context.rankedCandidates
+          .filter((chapter) => modelMap.has(chapter.chapterId))
+          .map((chapter) => {
+            const modelChapter = modelMap.get(chapter.chapterId) || {};
+            return {
+              ...chapter,
+              reasons: Array.isArray(modelChapter.reasons) && modelChapter.reasons.length > 0
+                ? modelChapter.reasons.slice(0, 3)
+                : chapter.reasons
+            };
+          });
+
+        if (reranked.length > 0) {
+          recommendations = reranked.slice(0, 5);
+        }
+      }
+    } catch (modelError) {
+      console.warn('Bedrock ranking failed, falling back to heuristic ranking:', modelError.message);
+      recommendationStrategy = 'heuristic-fallback';
+    }
+
+    return {
+      statusCode: 200,
+      headers,
+      body: JSON.stringify({
+        recommendations,
+        strategy: recommendationStrategy,
+        profileSignals: {
+          schools: context.preferredSchools,
+          tags: context.preferredTags
+        }
+      })
+    };
+  } catch (error) {
+    console.error('Error getting recommendations:', error);
+    return {
+      statusCode: 500,
+      headers,
+      body: JSON.stringify({ error: 'Failed to fetch recommendations', details: error.message })
+    };
+  }
+};
+
+const chatWithRecommendationBot = async (userEmail, body, headers) => {
+  try {
+    const user = await getUserByEmail(userEmail);
+    if (!user) {
+      return {
+        statusCode: 404,
+        headers,
+        body: JSON.stringify({ error: 'User not found' })
+      };
+    }
+
+    const message = toSafeString(body?.message);
+    const history = Array.isArray(body?.history) ? body.history.slice(-8) : [];
+
+    if (!message) {
+      return {
+        statusCode: 400,
+        headers,
+        body: JSON.stringify({ error: 'Message is required' })
+      };
+    }
+
+    const context = await buildRecommendationContext(user);
+    let recommendations = context.rankedCandidates.slice(0, 5);
+    let answer = `My top chapter picks for you right now are ${recommendations.map((item) => item.chapterName).join(', ')}.`;
+
+    try {
+      const modelResult = await invokeRecommendationModel({
+        user,
+        context,
+        mode: 'chat',
+        message,
+        history
+      });
+
+      if (Array.isArray(modelResult?.recommendedChapterIds) && modelResult.recommendedChapterIds.length > 0) {
+        const idSet = new Set(modelResult.recommendedChapterIds);
+        const botRecommendations = context.rankedCandidates.filter((chapter) => idSet.has(chapter.chapterId));
+        if (botRecommendations.length > 0) {
+          recommendations = botRecommendations.slice(0, 5);
+        }
+      }
+
+      if (typeof modelResult?.answer === 'string' && modelResult.answer.trim()) {
+        answer = modelResult.answer.trim();
+      }
+    } catch (modelError) {
+      console.warn('Bedrock chatbot failed, using fallback message:', modelError.message);
+    }
+
+    return {
+      statusCode: 200,
+      headers,
+      body: JSON.stringify({
+        answer,
+        recommendations,
+        strategy: 'bedrock-nova-micro-chat'
+      })
+    };
+  } catch (error) {
+    console.error('Error chatting with recommendation bot:', error);
+    return {
+      statusCode: 500,
+      headers,
+      body: JSON.stringify({ error: 'Failed to chat with recommendation bot', details: error.message })
     };
   }
 };
@@ -704,4 +1022,3 @@ const getPendingRegistrations = async (userEmail, headers) => {
     };
   }
 };
-

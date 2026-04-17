@@ -7,6 +7,18 @@ const dynamo = new DynamoDBClient({ region: "ap-south-1" });
 const USERS_TABLE = "Unify-Users";
 const CHAPTERS_TABLE = "Chapters";
 
+const normalizeTags = (tagsAttribute) => {
+  if (!tagsAttribute) return [];
+  const rawTags = tagsAttribute.SS || tagsAttribute.L?.map((item) => item.S) || [];
+  return Array.from(
+    new Set(
+      rawTags
+        .map((tag) => String(tag || '').trim().toLowerCase())
+        .filter(Boolean)
+    )
+  );
+};
+
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "Content-Type,Authorization",
@@ -83,6 +95,8 @@ export const handler = async (event) => {
         chapterHead: chapter.headName?.S || "Not assigned",
         headEmail: chapter.headEmail?.S || "",
         description: "", // Not available in your schema
+        school: chapter.school?.S || "",
+        tags: normalizeTags(chapter.tags),
         status: chapter.status?.S || "active",
         memberCount: chapter.memberCount?.N || "0",
         isRegistered: false

@@ -51,6 +51,17 @@ const verifyChapterHead = async (email) => {
   }
 };
 
+const normalizeTags = (tags) => {
+  if (!Array.isArray(tags)) return [];
+  return Array.from(
+    new Set(
+      tags
+        .map((tag) => String(tag || '').trim())
+        .filter(Boolean)
+    )
+  );
+};
+
 // Helper: Resolve chapterId for chapter head record
 const resolveChapterContext = async (chapterHead) => {
   if (!chapterHead) return chapterHead;
@@ -125,6 +136,8 @@ const getMyChapters = async (chapterHead, headers) => {
       headEmail: chapter.headEmail,
       headName: chapter.headName,
       memberCount: chapter.memberCount || 0,
+      school: chapter.school || '',
+      tags: normalizeTags(chapter.tags),
       status: chapter.status || 'active',
       updatedAt: chapter.updatedAt || null,
       registrationStatus: chapter.registrationOpen ? 'open' : 'closed'
@@ -133,6 +146,66 @@ const getMyChapters = async (chapterHead, headers) => {
   } catch (error) {
     console.error('Error getting chapters:', error);
     return { statusCode: 500, headers, body: JSON.stringify({ error: 'Failed to fetch chapters', details: error.message }) };
+  }
+};
+
+// PUT: update chapter school and tags
+const updateChapterTags = async (chapterHead, chapterId, body, headers) => {
+  try {
+    if (chapterId !== chapterHead.chapterId) {
+      return {
+        statusCode: 403,
+        headers,
+        body: JSON.stringify({ error: 'Access denied. Can only update your own chapter.' })
+      };
+    }
+
+    const school = String(body?.school || '').trim();
+    const tags = normalizeTags(body?.tags);
+
+    if (!school) {
+      return {
+        statusCode: 400,
+        headers,
+        body: JSON.stringify({ error: 'School is required.' })
+      };
+    }
+
+    if (tags.length === 0) {
+      return {
+        statusCode: 400,
+        headers,
+        body: JSON.stringify({ error: 'At least one tag is required.' })
+      };
+    }
+
+    const result = await dynamoDB.send(new UpdateCommand({
+      TableName: 'Chapters',
+      Key: { chapterId },
+      UpdateExpression: 'SET school = :school, tags = :tags, updatedAt = :updatedAt',
+      ExpressionAttributeValues: {
+        ':school': school,
+        ':tags': tags,
+        ':updatedAt': new Date().toISOString()
+      },
+      ReturnValues: 'ALL_NEW'
+    }));
+
+    return {
+      statusCode: 200,
+      headers,
+      body: JSON.stringify({
+        message: 'Chapter metadata updated successfully.',
+        chapter: result.Attributes
+      })
+    };
+  } catch (error) {
+    console.error('Error updating chapter tags:', error);
+    return {
+      statusCode: 500,
+      headers,
+      body: JSON.stringify({ error: 'Failed to update chapter metadata', details: error.message })
+    };
   }
 };
 
@@ -591,6 +664,8 @@ export const handler = async (event) => {
         return await getChapterRegistrations(chapterHead, pathParameters.chapterId, headers);
       case httpMethod === 'GET' && path === '/chapterhead/events':
         return await getMyEvents(chapterHead, headers);
+      case httpMethod === 'PUT' && path === '/chapterhead/chapters/{chapterId}/tags':
+        return await updateChapterTags(chapterHead, pathParameters.chapterId, JSON.parse(event.body), headers);
       case httpMethod === 'PUT' && path === '/chapterhead/toggle-registration':
         return await toggleRegistration(chapterHead, JSON.parse(event.body), headers);
       case httpMethod === 'PUT' && path === '/chapterhead/registration/{registrationId}':

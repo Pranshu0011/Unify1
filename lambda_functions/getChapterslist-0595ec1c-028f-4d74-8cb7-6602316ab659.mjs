@@ -2,6 +2,18 @@ import { DynamoDBClient, ScanCommand } from "@aws-sdk/client-dynamodb";
 
 const dynamo = new DynamoDBClient({ region: "ap-south-1" });
 
+const normalizeTags = (tagsAttribute) => {
+  if (!tagsAttribute) return [];
+  const rawTags = tagsAttribute.SS || tagsAttribute.L?.map((item) => item.S) || [];
+  return Array.from(
+    new Set(
+      rawTags
+        .map((tag) => String(tag || '').trim().toLowerCase())
+        .filter(Boolean)
+    )
+  );
+};
+
 export const handler = async (event) => {
   // Handle CORS preflight
   if (event.httpMethod === 'OPTIONS') {
@@ -36,6 +48,8 @@ export const handler = async (event) => {
       chapterHead: item.headName?.S || 'Not assigned', // Fixed: headName not chapterHead
       headEmail: item.headEmail?.S || '',             // Added: headEmail field
       description: item.description?.S || '',        // This field doesn't exist in your data
+      school: item.school?.S || '',
+      tags: normalizeTags(item.tags),
       status: item.status?.S || 'active',
       memberCount: item.memberCount?.N || '0',       // Added: memberCount (Number type)
       createdAt: item.createdAt?.S || '',            // Added: createdAt

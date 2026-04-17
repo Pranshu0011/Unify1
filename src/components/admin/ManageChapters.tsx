@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Users, Eye, Mail, Calendar, AlertCircle, CheckCircle, RefreshCw, Edit2, BookOpen, ArrowLeft } from 'lucide-react';
+import { Users, Eye, Mail, Calendar, AlertCircle, CheckCircle, RefreshCw, Edit2, BookOpen, ArrowLeft, Tags } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
 import { useChapterHead } from '../../contexts/ChapterHeadContext';
@@ -264,7 +264,18 @@ const ManageChapters: React.FC = () => {
                           >
                             <Edit2 className="h-4 w-4" />
                           </button>
-                          
+
+                          <button
+                            onClick={() => navigate('/head/chapters/tags')}
+                            className="px-3 py-1 rounded-lg text-xs font-medium transition-all duration-200 bg-cyan-100 text-cyan-800 hover:bg-cyan-200"
+                            title="Enter Tags"
+                          >
+                            <span className="inline-flex items-center gap-1">
+                              <Tags className="h-3.5 w-3.5" />
+                              Enter Tags
+                            </span>
+                          </button>
+
                           <button
                             onClick={() => handleToggleRegistration(chapter.chapterId, chapter.registrationStatus || 'closed')}
                             disabled={updating === chapter.chapterId}

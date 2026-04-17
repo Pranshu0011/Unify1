@@ -7,6 +7,18 @@ const dynamo = new DynamoDBClient({ region: "ap-south-1" });
 const USERS_TABLE = "Unify-Users";
 const CHAPTERS_TABLE = "Chapters";
 
+const normalizeTags = (tagsAttribute) => {
+  if (!tagsAttribute) return [];
+  const rawTags = tagsAttribute.SS || tagsAttribute.L?.map((item) => item.S) || [];
+  return Array.from(
+    new Set(
+      rawTags
+        .map((tag) => String(tag || '').trim().toLowerCase())
+        .filter(Boolean)
+    )
+  );
+};
+
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "Content-Type,Authorization",
@@ -83,7 +95,13 @@ export const handler = async (event) => {
       TableName: CHAPTERS_TABLE
     };
 
-    const allChaptersResult = await dynamo.send(new ScanCommand(chapterParams));
+    const [allChaptersResult, allUsersResult] = await Promise.all([
+      dynamo.send(new ScanCommand(chapterParams)),
+      dynamo.send(new ScanCommand({
+        TableName: USERS_TABLE,
+        ProjectionExpression: "userId, email"
+      }))
+    ]);
     
     // Get all users to resolve head emails to head IDs (sub)
     const userMap = {}; // lowercase email -> userId (sub)
@@ -106,6 +124,8 @@ export const handler = async (event) => {
           chapterHead: chapter.headName?.S || "Not assigned",
           headEmail: chapter.headEmail?.S || "", // Keep original case for display
           headId: userMap[hEmail] || chapter.headEmail?.S || "", // Use sub, fallback to original email
+          school: chapter.school?.S || "",
+          tags: normalizeTags(chapter.tags),
           status: chapter.status?.S || "active",
           memberCount: chapter.memberCount?.N || "0"
         };

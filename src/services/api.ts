@@ -101,6 +101,22 @@ export const studentAPI = {
     return handleResponse(response);
   },
 
+  getRecommendedChapters: async () => {
+    const response = await fetch(`${API_BASE_URL}/student/recommendations`, {
+      headers: getAuthHeaders(),
+    });
+    return handleResponse(response);
+  },
+
+  chatWithRecommendationBot: async (payload: { message: string; history?: Array<{ role: 'user' | 'assistant'; content: string }> }) => {
+    const response = await fetch(`${API_BASE_URL}/student/recommendations/chat`, {
+      method: 'POST',
+      headers: getAuthHeaders(),
+      body: JSON.stringify(payload),
+    });
+    return handleResponse(response);
+  },
+
   getAllChapters: async () => {
     const response = await fetch(`${API_BASE_URL}/get-chapters`, {
       headers: getAuthHeaders(),

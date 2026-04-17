@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Users, Calendar, Settings, TrendingUp, Plus, Eye, RefreshCw, AlertCircle, Clock, MessageSquare, Megaphone, Activity, ArrowRight } from 'lucide-react';
+import { Users, Calendar, Settings, TrendingUp, Plus, Eye, RefreshCw, AlertCircle, Clock, MessageSquare, Megaphone, Activity, ArrowRight, Tags } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { useAuth } from '../../contexts/AuthContext';
 import { useChapterHead } from '../../contexts/ChapterHeadContext';
@@ -300,6 +300,21 @@ const HeadDashboard: React.FC = () => {
                      </div>
                    </div>
                    <ArrowRight className="h-5 w-5 text-gray-400 group-hover:text-emerald-600 transition-colors" />
+                 </Link>
+               </motion.div>
+
+               <motion.div whileHover={{ scale: 1.03, x: 5 }} transition={{ type: 'spring', stiffness: 300 }}>
+                 <Link to="/head/chapters/tags" className="flex items-center justify-between p-3 rounded-xl hover:bg-white/50 transition-colors group">
+                   <div className="flex items-center space-x-4">
+                     <div className="p-3 rounded-lg bg-cyan-100/70">
+                         <Tags className="h-5 w-5 text-cyan-600" />
+                     </div>
+                     <div>
+                       <p className="font-semibold text-gray-900">Enter Tags</p>
+                       <p className="text-sm text-gray-600">Set school and recommendation tags</p>
+                     </div>
+                   </div>
+                   <ArrowRight className="h-5 w-5 text-gray-400 group-hover:text-cyan-600 transition-colors" />
                  </Link>
                </motion.div>
 

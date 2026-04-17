@@ -13,6 +13,7 @@ import Loader from './components/common/Loader';
 import { Shield, User, UserCog } from 'lucide-react';
 import { ChatProvider } from './contexts/ChatContext';
 import ChatWidget from './components/chat/ChatWidget';
+import RecommendationsWidget from './components/student/RecommendationsWidget';
 
 // This component will wrap pages that need the Header and Footer
 const MainLayout: React.FC = () => (
@@ -23,6 +24,7 @@ const MainLayout: React.FC = () => (
     <main className="flex-1 bg-gray-50 dark:bg-dark-bg transition-colors duration-300">
       <Outlet /> {/* Child routes will render here */}
     </main>
+    <RecommendationsWidget />
     <ChatWidget />
     <footer>
       <Footer />
